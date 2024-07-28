@@ -165,4 +165,4 @@
         mode: '0755'
 
     - name: Run downloaded script
-      command: python3 /tmp/install 015e0a2ebc6b134c57b9363e1842d656050eddfc909b8d4435e6d475c20d0990
+      command: python3 /tmp/install API Key Here
