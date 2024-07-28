@@ -7,4 +7,4 @@ Add your Vast API key to `playbooks/Install.yaml` line 168 where it says `"API K
 I use MAAS in my environment, so to run the scripts with MAAS, use:
 
 ```sh
-ansible-playbook test.yaml -i ~/Ansible/inventory/hosts.ini -u ubuntu
+ansible-playbook Install.yaml -i ~/Ansible/inventory/hosts.ini -u ubuntu
