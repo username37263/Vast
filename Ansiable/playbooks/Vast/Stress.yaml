@@ -1,0 +1,53 @@
+---
+- hosts: "*"
+  become: yes
+  tasks:
+    - name: Add NVIDIA GPU driver repository
+      apt_repository:
+        repo: ppa:graphics-drivers/ppa
+        state: present
+        update_cache: yes
+
+    - name: Install NVIDIA drivers and utilities
+      apt:
+        name: 
+          - nvidia-driver-510  # Adjust driver version as necessary
+          - stress-ng
+        state: present
+        update_cache: yes
+
+    - name: Check if nvidia-smi is installed
+      command: nvidia-smi
+      register: smi_result
+      ignore_errors: True
+
+    - name: Report nvidia-smi availability
+      debug:
+        msg: "nvidia-smi is installed and functioning."
+      when: smi_result.rc == 0
+
+    - name: Reboot the machine if NVIDIA drivers were installed
+      reboot:
+      when: smi_result.rc != 0
+
+    - name: Clone gpu-burn for GPU stress testing
+      git:
+        repo: 'https://github.com/wilicc/gpu-burn.git'
+        dest: '/opt/gpu-burn'
+        clone: yes
+        update: yes
+
+    - name: Compile gpu-burn
+      make:
+        chdir: '/opt/gpu-burn'
+        target: 'gpu_burn'
+
+    - name: Run gpu-burn indefinitely
+      shell: nohup /opt/gpu-burn/gpu_burn > /dev/null 2>&1 &
+      async: 86400
+      poll: 0
+
+    - name: Run stress-ng for CPU and memory indefinitely
+      shell: nohup stress-ng --cpu 4 --io 2 --vm 2 --vm-bytes 256M --timeout 86400s > /dev/null 2>&1 &
+      async: 86400
+      poll: 0

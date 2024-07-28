@@ -1,0 +1,68 @@
+---
+- name: Disable automatic updates on Ubuntu
+  hosts: "*"
+  become: yes
+  tasks:
+
+    - name: Disable periodic updates and unattended upgrades
+      copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        content: |
+          APT::Periodic::Update-Package-Lists "0";
+          APT::Periodic::Unattended-Upgrade "0";
+
+    - name: Prevent apt from auto-starting
+      copy:
+        dest: /etc/apt/apt.conf.d/10periodic
+        content: |
+          APT::Periodic::Enable "0";
+
+    - name: Stop and disable unattended-upgrades service
+      systemd:
+        name: unattended-upgrades
+        state: stopped
+        enabled: no
+
+    - name: Remove unattended-upgrades package
+      apt:
+        name: unattended-upgrades
+        state: absent
+
+    - name: Stop and disable apt-daily services
+      systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: no
+      with_items:
+        - apt-daily.timer
+        - apt-daily-upgrade.timer
+        - apt-daily.service
+        - apt-daily-upgrade.service
+
+    - name: Mask apt-daily services
+      command: systemctl mask {{ item }}
+      with_items:
+        - apt-daily.service
+        - apt-daily-upgrade.service
+
+    - name: Remove update-notifier-common package
+      apt:
+        name: update-notifier-common
+        state: absent
+
+    - name: Get list of installed packages
+      command: dpkg --get-selections | grep -v deinstall | awk '{print $1}'
+      register: installed_packages
+
+    - name: Lock each installed package to prevent updates
+      shell: |
+        for pkg in {{ installed_packages.stdout_lines }}; do
+          apt-mark hold $pkg > /dev/null 2>&1
+        done
+      args:
+        executable: /bin/bash
+      register: lock_packages
+
+    - name: Debug output of locked packages
+      debug:
+        var: lock_packages

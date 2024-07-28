@@ -1,0 +1,168 @@
+---
+- name: Configure and prepare hosts
+  hosts: "*"
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Ensure mdadm is installed
+      apt:
+        name: mdadm
+        state: present
+
+    - name: Check if /dev/md0 exists
+      stat:
+        path: /dev/md0
+      register: md0_status
+
+    - name: Get list of available disks excluding the root and mounted disks over 1TB
+      shell: |
+        lsblk -dn -o NAME,SIZE -b | awk '$2 > 1000000000000 && $1 !~ /md/' | sort -k2 -rn
+      register: disk_list
+      when: md0_status.stat.exists == false
+
+    - name: Debug available disks found
+      debug:
+        msg: "Available disks found: {{ disk_list.stdout_lines }}"
+      when: md0_status.stat.exists == false
+
+    - name: Set the selected storage device (RAID or single disk)
+      set_fact:
+        selected_storage: "{{ '/dev/md0' if md0_status.stat.exists else '/dev/' + disk_list.stdout_lines[0].split()[0] }}"
+
+    - name: Fail if no suitable storage device over 1TB is found
+      fail:
+        msg: "No suitable storage device over 1TB found."
+      when: selected_storage is not defined
+
+    - name: Display selected storage device
+      debug:
+        msg: "Using storage device {{ selected_storage }}"
+
+    - name: Ensure the partition is unmounted
+      command: umount "{{ selected_storage }}"
+      ignore_errors: true
+
+    - name: Check if any processes are using the storage device
+      shell: "lsof {{ selected_storage }}"
+      register: lsof_output
+      ignore_errors: true
+
+    - name: Kill any processes using the storage device
+      shell: "fuser -km {{ selected_storage }}"
+      when: lsof_output.rc == 0
+      ignore_errors: true
+
+    - name: Deactivate any LVM volumes on the storage device
+      shell: "vgchange -an $(pvs --noheadings -o vg_name {{ selected_storage }})"
+      ignore_errors: true
+
+    - name: Clear partition table
+      command: sgdisk --zap-all "{{ selected_storage }}"
+      ignore_errors: true
+
+    - name: Ensure the storage device is not part of any RAID
+      command: mdadm --zero-superblock "{{ selected_storage }}"
+      ignore_errors: true
+
+    - name: Ensure the storage device is not part of any LVM
+      shell: "pvremove -ff {{ selected_storage }}"
+      ignore_errors: true
+
+    - name: Create XFS filesystem on the selected storage device
+      filesystem:
+        fstype: xfs
+        dev: "{{ selected_storage }}"
+        opts: -f
+
+    - name: Create mount point for Docker
+      file:
+        path: /var/lib/docker
+        state: directory
+
+    - name: Ensure the partition is unmounted
+      command: umount "{{ selected_storage }}"
+      ignore_errors: true
+
+    - name: Check if any processes are using the mount point
+      shell: "lsof +D /var/lib/docker"
+      register: lsof_output_mount
+      ignore_errors: true
+
+    - name: Kill any processes using the mount point
+      command: fuser -km /var/lib/docker
+      when: lsof_output_mount.rc == 0
+      ignore_errors: true
+
+    - name: Set up the filesystem in fstab
+      command: bash -c 'uuid=$(xfs_admin -lu {{ selected_storage }} | sed -n "2p" | awk "{print \$NF}"); echo "UUID=$uuid /var/lib/docker/ xfs rw,auto,pquota,discard,nofail,prjquota 0 0" >> /etc/fstab'
+
+    - name: Mount all filesystems
+      command: mount -a
+
+    - name: Disable nouveau driver
+      blockinfile:
+        path: /etc/modprobe.d/blacklist-nvidia-nouveau.conf
+        block: |
+          blacklist nouveau
+          options nouveau modeset=0
+        create: yes
+
+    - name: Update initial RAM filesystem
+      command: update-initramfs -u
+
+    - name: Set GRUB configuration
+      copy:
+        content: 'GRUB_CMDLINE_LINUX=systemd.unified_cgroup_hierarchy=false'
+        dest: /etc/default/grub.d/cgroup.cfg
+
+    - name: Update GRUB
+      command: update-grub
+
+    - name: Reboot the machine
+      reboot:
+
+    - name: Wait for the host to come online
+      wait_for_connection:
+        delay: 60
+        timeout: 300
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install essential packages
+      apt:
+        name: "{{ item }}"
+        state: latest
+      loop:
+        - nvidia-driver-535-server
+        - libgtk-3-0
+        - xinit
+        - xserver-xorg-core
+
+    - name: Remove GNOME shell
+      apt:
+        name: gnome-shell
+        state: absent
+
+    - name: Update GRUB post package changes
+      command: update-grub
+
+    - name: Configure NVIDIA settings
+      command: nvidia-xconfig -a --cool-bits=28 --allow-empty-initial-configuration --enable-all-gpus
+
+    - name: Set up cron job for nvidia-smi
+      cron:
+        name: "Enable nvidia-smi power management"
+        special_time: reboot
+        job: "nvidia-smi -pm 1"
+
+    - name: Download and execute a script
+      get_url:
+        url: https://console.vast.ai/install
+        dest: /tmp/install
+        mode: '0755'
+
+    - name: Run downloaded script
+      command: python3 /tmp/install 015e0a2ebc6b134c57b9363e1842d656050eddfc909b8d4435e6d475c20d0990

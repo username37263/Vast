@@ -1,0 +1,68 @@
+---
+- name: Install Docker Compose and setup monitoring
+  hosts: "*"
+  become: yes
+  tasks:
+    - name: Remove existing Docker Compose
+      apt:
+        name: docker-compose
+        state: absent
+
+    - name: Download Docker Compose binary
+      command: "curl -L 'https://github.com/docker/compose/releases/download/v2.24.4/docker-compose-$(uname -s)-$(uname -m)' -o /usr/local/bin/docker-compose"
+      args:
+        creates: /usr/local/bin/docker-compose
+
+    - name: Make Docker Compose executable
+      file:
+        path: /usr/local/bin/docker-compose
+        mode: '+x'
+
+    - name: Create symlink for Docker Compose
+      file:
+        src: /usr/local/bin/docker-compose
+        dest: /usr/bin/docker-compose
+        state: link
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install gettext-base
+      apt:
+        name: gettext-base
+        state: present
+
+    - name: Download docker-compose.yml if not found
+      get_url:
+        url: https://raw.githubusercontent.com/jjziets/DCMontoring/main/client/docker-compose.yml-vast
+        dest: "{{ lookup('env', 'HOME') }}/docker-compose.yml"
+      register: download_result
+      failed_when: download_result is failed
+
+    - name: Download check-upgradable-packages.sh script
+      get_url:
+        url: https://github.com/jjziets/gddr6_temps/raw/master/update-package-count.sh
+        dest: /usr/local/bin/check-upgradable-packages.sh
+        mode: 'u+x'
+
+    - name: Add cron job to check upgradable packages hourly
+      cron:
+        name: Check upgradable packages
+        minute: '0'
+        hour: '*'
+        job: /usr/local/bin/check-upgradable-packages.sh
+
+    - name: Set facts about docker-compose.yml directory
+      set_fact:
+        docker_compose_dir: "{{ download_result.dest | dirname }}"
+
+    - name: Pull Docker images
+      command: "docker-compose pull"
+      args:
+        chdir: "{{ docker_compose_dir }}"
+
+    - name: Replace placeholder in docker-compose.yml and start services
+      command: "sed 's/__HOST_HOSTNAME__/$(hostname)/g' docker-compose.yml | docker-compose -f - up -d"
+      args:
+        chdir: "{{ docker_compose_dir }}"
